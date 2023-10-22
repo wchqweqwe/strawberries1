@@ -1,0 +1,297 @@
+---
+title: "hw"
+output: html_document
+date: "2023-10-14"
+---
+
+##Data acquisition and assessment:
+The data set for this assignment has been selected from: [USDA_NASS](https://quickstats.nass.usda.gov) <br> The data have been stored on NASS here: [USDA_NASS_strawb_2023SEP19](https://quickstats.nass.usda.gov/results/45FBC825-B104-38E2-9802-839F5F3C7036)
+
+
+## Data cleaning and organization   
+```{r}
+library(knitr)  
+library(kableExtra)
+library(tidyverse)
+library(stringr)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+```
+
+
+Outline the approach taked to clean and organize the data.
+
+1. take a look at the data set and an overview of this data.
+
+2. drop one-item columns because they are not useful when we are analyzing. 
+
+3. understand which column has missing values and what should I do to drop missing values.
+
+4. deal with the data Item part and separate to census and survey data.
+
+5. divide the data to weight and sales so that we can have same measure of values.
+
+6. do some visualizations to see the pattern 
+    a) the chemical from domain. 
+    b) the value by state, from weight and sales.
+    c) the value by whether organic, from weight and sales.
+
+```{r}
+straw = read.csv("strawberry.csv",header = TRUE)
+dim(straw)
+head(straw)
+```
+
+It has 4313 obs and 21 columns. and as we can see there are a lot of missing values in this data. 
+
+
+```{r}
+#| label: drop one-item columns
+## define function
+drop_one_value_col <- function(df){
+col_name <- NULL
+col_val <- NULL
+suppressWarnings({
+for(i in 1:dim(df)[2]){
+if((df |> distinct(df[,i]) |> count()) == 1){
+  col_name = c(col_name, colnames(df[i]))
+  col_val = c(col_val, df[1,i])  
+} }
+})
+
+if(is.null(col_name)){return("No Columns to drop")}else{
+   col_val = unlist(col_val)
+   attributes(col_val) = NULL
+   drp = data.frame(col_name, col_val)
+   return(drp)
+   }
+}
+
+str <- drop_one_value_col(straw)
+
+# str |> kable(caption = "Dropped Single-Value Columns: names and values")
+
+str <- str$col_name
+
+strawberry <- straw|> select(!all_of(str))
+head(strawberry)
+
+```
+
+After drop this columns, we have about 10 columns left and looks like some missing values are already gone.
+
+```{r}
+#drop missing values, not only for na, but also some values that can not be understand. 
+
+is_na<- sapply(strawberry, function(column) sum(is.na(column)))
+is_na
+# only ANSI have some NAs, and we can delete these observation 
+strawberry = strawberry[!is.na(strawberry$State.ANSI),]
+
+```
+
+
+```{r}
+# Also, we see the value part and CV part has some value that I am not understand, and I want convert them to NA and, delete the comma in the number.
+# by checking the unique of the value, we can see that Value part need to deal with D,NA,Z
+#,and CV need to H,D. 
+
+strawberry$CV....[strawberry$CV.... %in% c("(H)", "(D)")] <- NA
+
+strawberry$Value[strawberry$Value %in% c(" (D)"," (NA)"," (Z)")] <- NA
+
+#delete them 
+strawberry = strawberry[!is.na(strawberry$CV....),]
+strawberry = strawberry[!is.na(strawberry$Value),]
+
+# delete comma
+strawberry$Value <- gsub(",", "", strawberry$Value)
+
+# Convert the 'Value' column to numeric
+strawberry$Value <- as.numeric(strawberry$Value)
+strawberry$CV....<- as.numeric(strawberry$CV....)
+
+head(strawberry)
+```
+
+
+
+# deal with part with data item 
+```{r}
+
+# Extract Organic Status
+strawberry <- strawberry %>%
+  mutate(Organic_Status = ifelse(str_detect(`Data.Item`, "ORGANIC"), 1, 0))
+
+# Extract Market Type
+strawberry<- strawberry %>%
+  mutate(Market_Type = case_when(
+    str_detect(`Data.Item`, "FRESH MARKET") ~ "FRESH MARKET",
+    str_detect(`Data.Item`, "PROCESSING") ~ "PROCESSING",
+    TRUE ~ "GENERAL"
+  ))
+
+# Extract Data Type
+strawberry<- strawberry %>%
+  mutate(Data_Type = case_when(
+    str_detect(`Data.Item`, "OPERATIONS WITH SALES") ~ "OPERATIONS",
+    str_detect(`Data.Item`, "PRODUCTION, MEASURED IN CWT") ~ "PRODUCTION_CWT",
+    str_detect(`Data.Item`, "SALES, MEASURED IN \\$") ~ "SALES_$",
+    str_detect(`Data.Item`, "SALES, MEASURED IN CWT") ~ "SALES_CWT",
+    TRUE ~ NA_character_
+  ))
+
+# View the first few rows
+head(strawberry[, c("Data.Item", "Organic_Status", "Market_Type", "Data_Type")])
+
+```
+
+
+
+# Separate CENSUS and SURVEY into two Data Frames #
+
+<!-- In the strawberry data frame,  -->
+<!-- The CENSUS rows contains marketing, sales, and productiong data.  The SURVEY rows contain rows which may be redundant with the CENSUS rows and chemical application rows. -->
+
+<!-- After splitting CENSUS and SURVEY rows into two data frames,  -->
+<!-- finish organizing the CENSUS data first.  Then, organize the -->
+<!-- SURVEY data frame splitting the marketing, and production data from the chemical application data. -->
+
+```{r}
+
+strwb_census <- strawberry |> filter(Program == "CENSUS")
+
+strwb_survey <- strawberry |> filter(Program == "SURVEY")
+
+
+strawberry_weight = strawberry[strawberry$Data_Type %in% c("PRODUCTION_CWT","SALES_CWT"),]
+
+strawberry_sale = strawberry[strawberry$Data_Type %in% c("OPERATIONS","SALES_$"),]
+```
+
+
+### Visulization part
+
+chemical discussion 
+```{r}
+unique(strawberry$Domain)
+
+domain_statistics <- strawberry%>%
+  group_by(Domain) %>%
+  summarise(Count = n(),
+            Mean = mean(Value, na.rm = TRUE),
+            Median = median(Value, na.rm = TRUE),
+            Max = max(Value, na.rm = TRUE))
+
+# Print results
+print(domain_statistics)
+
+ggplot(domain_statistics, aes( x = log(Mean),y =reorder(Domain, Mean))) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  labs(title = "Histogram of Values", x = "Value", y = "Frequency") +
+  theme_minimal()
+```
+
+From here, we can see that for different chemical, there may also have different mean values, and ORGANIC tend to have higher values then using chemicals ones. And chmical others also seems will have
+
+
+# know the weight value by state
+```{r}
+state_statistics <- strawberry_weight %>%
+  group_by(State) %>%
+  summarise(
+    Count = n(),
+    Mean = mean(Value, na.rm = TRUE),
+    Median = median(Value, na.rm = TRUE),
+    Min = min(Value, na.rm = TRUE),
+    Max = max(Value, na.rm = TRUE),
+    SD = sd(Value, na.rm = TRUE)
+  ) %>%
+  arrange(-Mean) 
+
+ggplot(state_statistics, aes(x = reorder(State, -Mean), y = log(Mean))) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(title = "Average Value by State", x = "State", y = "Average Value")
+
+
+state_statistics
+```
+
+California has super large average value,so I decide to use log to have a clear picture. 
+From here we can see that California is super large and other Florida is second large
+
+
+# know the sales value by state
+
+```{r}
+state_statistics <- strawberry_sale %>%
+  group_by(State) %>%
+  summarise(
+    Count = n(),
+    Mean = mean(Value, na.rm = TRUE),
+    Median = median(Value, na.rm = TRUE),
+    Min = min(Value, na.rm = TRUE),
+    Max = max(Value, na.rm = TRUE),
+    SD = sd(Value, na.rm = TRUE)
+  ) %>%
+  arrange(-Mean) 
+
+ggplot(state_statistics, aes(x = reorder(State, -Mean), y = log(Mean))) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(title = "Average Value by State", x = "State", y = "Average Value")
+
+
+state_statistics
+```
+
+As we compare sales and weight, California and Florida is similar in their position, but there are a lot of same height in sales have less height in weight. I assume it may be caused by these states sales more non-organic straws than other sates. 
+
+
+
+
+
+```{r}
+# Box plot of values distribution by organic status
+ggplot(strawberry, aes(x = as.factor(Organic_Status), y = log(Value))) +
+  geom_boxplot(outlier.color = "red", outlier.shape = 16, outlier.size = 2, fill = "steelblue") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(title = "Distribution of Values by Organic Status", x = "Organic Status", y = "Value") +
+  scale_y_continuous(labels = scales::comma)
+
+```
+
+The organic tends to have higher value than non-Organic. 
+
+```{r}
+ggplot(strawberry_weight , aes(x = as.factor(Organic_Status), y = log(Value))) +
+  geom_boxplot(outlier.color = "red", outlier.shape = 16, outlier.size = 2, fill = "steelblue") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(title = "Distribution of Values by Organic Status", x = "Organic Status", y = "Value") +
+  scale_y_continuous(labels = scales::comma)
+
+```
+
+The weight of non_organic is far higher than organic, which is accord with common sense that organic is expensice and less. 
+
+
+Reference:
+
+[NASS help](https://quickstats.nass.usda.gov/tutorials)
+
+[Quick Stats Glossary](https://quickstats.nass.usda.gov/src/glossary.pdf)
+
+[Quick Stats Column Definitions](https://quickstats.nass.usda.gov/param_define)
+
+[stats by subject](https://www.nass.usda.gov/Statistics_by_Subject/index.php?sector=CROPS)
+
+[Databases for Chemical Information](http://npic.orst.edu/ingred/cheminfo.html)
+
+[Pesticide Active Ingredients](http://npic.orst.edu/ingred/active.html)
+
+[TSCA Chemical Substance Inventory](https://www.epa.gov/tsca-inventory)
+
+[glyphosate](https://ordspub.epa.gov/ords/pesticides/f?p=CHEMICALSEARCH:3::::1,3,31,7,12,25:P3_XCHEMICAL_ID:2478)
+
